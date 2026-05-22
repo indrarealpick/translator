@@ -79,6 +79,7 @@ body{font-family:var(--font-body);background:var(--bg);color:var(--text);min-hei
 .ta{flex:1;min-height:200px;width:100%;padding:10px 14px;border:none;background:transparent;color:var(--text);font-family:var(--font-body);font-size:15px;line-height:1.7;resize:none;outline:none}
 .ta::placeholder{color:var(--text3)}
 .ta-out{color:var(--text2)}
+.romaji-box{display:none;padding:8px 14px 10px;border-top:1px solid var(--border);background:var(--surface2)}
 .skeleton{padding:12px 14px;flex:1;display:flex;flex-direction:column;gap:9px}
 .sk-line{height:13px;border-radius:5px;background:linear-gradient(90deg,var(--surface2) 25%,var(--border) 50%,var(--surface2) 75%);background-size:200% 100%;animation:shimmer 1.4s infinite}
 @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
@@ -276,6 +277,10 @@ body{font-family:var(--font-body);background:var(--bg);color:var(--text);min-hei
         <div class="panel-label">Hasil Terjemahan</div>
         <div id="outWrap" style="flex:1;display:flex;flex-direction:column">
           <textarea class="ta ta-out" id="outTxt" placeholder="Hasil terjemahan muncul di sini..." readonly></textarea>
+          <div id="romajiWrap" style="display:none;padding:8px 14px 10px;border-top:1px solid var(--border);background:var(--surface2);">
+            <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:var(--text3);margin-bottom:4px;">Romaji / Transliterasi</div>
+            <div id="romajiTxt" style="font-size:13px;color:var(--accent);font-style:italic;line-height:1.6;"></div>
+          </div>
           <div class="skeleton hidden" id="skelWrap">
             <div class="sk-line" style="width:88%"></div>
             <div class="sk-line" style="width:68%"></div>
@@ -519,7 +524,17 @@ async function translate() {
 
   const srcL = LANG_NAMES[src] || src;
   const tgtL = LANG_NAMES[tgt] || tgt;
-  const prompt = `You are a professional translator. Translate naturally and contextually. Preserve meaning and tone. Output ONLY the translated text, nothing else.\n\nTranslate from ${srcL} to ${tgtL}:\n\n${text}`;
+  const prompt = `You are a professional translator. Rules:
+1. Translate the text LITERALLY and ACCURATELY word by word
+2. Preserve the original meaning exactly - do not change, add, or remove meaning
+3. Use natural ${tgtL} expressions but stay true to the source
+4. Output ONLY the translated text, no explanations, no alternatives
+5. If translating to Japanese, use casual/natural spoken Japanese (口語)
+6. If translating to Korean, use natural conversational Korean
+
+Translate from ${srcL} to ${tgtL}:
+
+${text}`;
 
   try {
     let result = '';
@@ -574,6 +589,12 @@ async function translate() {
     addHist(text, result, src, tgt);
     saveLast(text, result);
     toast('Terjemahan selesai! ✓','success');
+    // Show romaji if target is Japanese or Korean
+    if (tgt === 'ja' || tgt === 'ko') {
+      showRomaji(result, tgt);
+    } else {
+      $('romajiWrap').style.display = 'none';
+    }
 
   } catch(err) {
     console.error(err);
@@ -746,13 +767,49 @@ function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').repl
 function updateChar(){const l=$('srcTxt').value.length;$('charCnt').textContent=l+' / 5000';$('charCnt').className='char'+(l>4000?' warn':'')+(l>=5000?' max':'')}
 function fmtTime(iso){try{const d=new Date(iso),now=new Date(),diff=now-d;if(diff<60000)return'Baru saja';if(diff<3600000)return Math.floor(diff/60000)+' mnt lalu';if(diff<86400000)return Math.floor(diff/3600000)+' jam lalu';return d.toLocaleDateString('id-ID',{day:'numeric',month:'short'})}catch(e){return''}}
 
+// ---- ROMAJI ----
+async function showRomaji(text, lang) {
+  const wrap = $('romajiWrap');
+  const out = $('romajiTxt');
+  wrap.style.display = 'block';
+  out.textContent = 'Memuat transliterasi...';
+  try {
+    const langName = lang === 'ja' ? 'Japanese' : 'Korean';
+    const prompt = `Convert the following ${langName} text to romanized Latin script (romaji for Japanese, romanization for Korean). Output ONLY the romanized text, nothing else.
+
+${text}`;
+    let romaji = '';
+    if (cfg.provider === 'google') {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${cfg.model}:generateContent?key=${cfg.key}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{maxOutputTokens:500,temperature:0.1}})
+      });
+      const d = await res.json();
+      romaji = d?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    } else {
+      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json','Authorization':`Bearer ${cfg.key}`,'HTTP-Referer':location.href,'X-Title':'LinguaAI'},
+        body: JSON.stringify({model:cfg.model,max_tokens:500,messages:[{role:'user',content:prompt}]})
+      });
+      const d = await res.json();
+      romaji = d?.choices?.[0]?.message?.content?.trim() || '';
+    }
+    out.textContent = romaji || 'Tidak dapat membuat transliterasi.';
+  } catch(e) {
+    out.textContent = 'Gagal memuat transliterasi.';
+  }
+}
+
 // ---- EVENTS ----
 function bindEvents() {
   $('themeBtn').onclick = () => applyTheme(document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark');
   $('trBtn').onclick = translate;
   $('srcTxt').addEventListener('keydown', e=>{ if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();translate();} });
   $('srcTxt').addEventListener('input', ()=>{ updateChar(); resize($('srcTxt')); if(autoOn){clearTimeout(window._at);window._at=setTimeout(()=>{if($('srcTxt').value.trim().length>2)translate();},1500);} });
-  $('clearBtn').onclick = ()=>{ $('srcTxt').value=''; $('outTxt').value=''; updateChar(); resize($('srcTxt')); $('outCnt').textContent='0 karakter'; };
+  $('clearBtn').onclick = ()=>{ $('srcTxt').value=''; $('outTxt').value=''; updateChar(); resize($('srcTxt')); $('outCnt').textContent='0 karakter'; $('romajiWrap').style.display='none'; };
   $('copyBtn').onclick = async ()=>{ const t=$('outTxt').value.trim(); if(!t){toast('Tidak ada teks','info');return;} try{await navigator.clipboard.writeText(t);}catch(e){const el=document.createElement('textarea');el.value=t;document.body.appendChild(el);el.select();document.execCommand('copy');document.body.removeChild(el);} toast('Disalin!','success'); };
   $('swapBtn').onclick = ()=>{ const sv=$('srcLang').value; if(sv==='auto'){toast('Tidak bisa swap saat Deteksi Otomatis','info');return;} const tv=$('tgtLang').value; $('srcLang').value=tv; $('tgtLang').value=sv; const st=$('srcTxt').value; $('srcTxt').value=$('outTxt').value; $('outTxt').value=st; updateChar(); resize($('srcTxt')); resize($('outTxt')); $('outCnt').textContent=$('outTxt').value.length+' karakter'; };
   $('autoTgl').onclick = ()=>{ autoOn=!autoOn; $('autoTgl').classList.toggle('on',autoOn); toast(autoOn?'Auto-translate aktif':'Auto-translate nonaktif','info'); };
